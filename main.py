@@ -15,6 +15,8 @@ class PTBModel(object):
             self.x = tf.placeholder(name='x', dtype=tf.int32, shape=(batch_size, FLAGS.mslen))
             self.y = tf.placeholder(name='y', dtype=tf.int32, shape=(batch_size, ))
             self.length = tf.placeholder(name='length', dtype=tf.int64, shape=(batch_size))
+            
+            self.weight = tf.placeholder(name='weight', dtype=tf.float32, shape=(1,42))
             pretrained_embedding = pickle.load(open(FLAGS.word_vec_pkl_file))
             pretrained_embedding = numpy.array(pretrained_embedding, dtype='float32')
             print(numpy.shape(pretrained_embedding))
@@ -24,36 +26,40 @@ class PTBModel(object):
             if use_dropout:
                 inputs = tf.nn.dropout(inputs, FLAGS.keep_prob)
             flstm_cell = BasicLSTMCell(FLAGS.hidden_size, forget_bias=0.0, state_is_tuple=True)
-            blstm_cell = BasicLSTMCell(FLAGS.hidden_size, forget_bias=0.0, state_is_tuple=True)
-                
+            #blstm_cell = BasicLSTMCell(FLAGS.hidden_size, forget_bias=0.0, state_is_tuple=True)
+            self._initial_state_f = flstm_cell.zero_state(FLAGS.batch_size, tf.float32)
             if use_dropout:
                 flstm_cell = DropoutWrapper(flstm_cell, output_keep_prob=FLAGS.keep_prob)
-                blstm_cell = DropoutWrapper(blstm_cell, output_keep_prob=FLAGS.keep_prob)
+                #blstm_cell = DropoutWrapper(blstm_cell, output_keep_prob=FLAGS.keep_prob)
+            cell = MultiRNNCell([flstm_cell] * 2, state_is_tuple=True)
                 
-            self._initial_state_f = flstm_cell.zero_state(FLAGS.batch_size, tf.float32)
-            self._initial_state_b = blstm_cell.zero_state(FLAGS.batch_size, tf.float32)
+            
+            #self._initial_state_b = blstm_cell.zero_state(FLAGS.batch_size, tf.float32)
                 
-            outputs, _ = tf.nn.bidirectional_dynamic_rnn(
-                    flstm_cell, blstm_cell, inputs, sequence_length=self.length,
-                dtype=tf.float32, initial_state_fw =flstm_cell.zero_state(batch_size, tf.float32), initial_state_bw = blstm_cell.zero_state(batch_size, tf.float32))
-            outputs = tf.concat(outputs, 2) #batach FLAGS.mslen hidden
-            output = tf.reduce_max(outputs, 1)#batch hidden
-              
+            _, final_states = tf.nn.dynamic_rnn(
+                    flstm_cell, inputs, sequence_length=self.length,
+                dtype=tf.float32, initial_state =flstm_cell.zero_state(batch_size, tf.float32))
+            final_states = tf.concat(final_states, 1) #batach FLAGS.mslen hidden
+            #output = tf.reduce_max(outputs, 1)#batch hidden
+            #output = tf.Print(output,[output])  
             print('bi-LSTM finished')
 
                
 
             w = tf.get_variable('w', [2 * FLAGS.hidden_size, 42], tf.float32)
             b = tf.get_variable('b', [1, 42], tf.float32)
-            tmatrix = tf.tanh(tf.matmul(output, w) + b)
+            tmatrix = tf.tanh(tf.matmul(final_states, w) + b)
                 
-
+            one_hots = tf.one_hot(self.y, 42)
+            weights = tf.reduce_sum(self.weight * one_hots, axis=1)
+            
             pre_dis = tf.nn.softmax(tmatrix)
-            #print(pre_dis)
+            self.pre_dis = pre_dis
             self.pre_label = tf.argmax(pre_dis, -1)
             #y_mask = tf.one_hot(self.y, 53)
                 
             loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=pre_dis, labels=self.y)
+            loss = loss * weights
             self.loss = tf.reduce_sum(loss) / batch_size
 
 
@@ -91,25 +97,34 @@ def sta(pre_label,gold_label):
         for n, line in enumerate(f):
             s = line.split('\t')
             dic[s[1].strip()] = s[0]
-    f = open('pre.csv', 'w')
+    #f = open('pre.csv', 'w')
+    no_relation = 0
+    pre = []
+    #print(pre_label)
     for i in pre_label:
-        f.write(dic[str(i)] + '\n')
-    f.close()
-    f = open('gold.csv', 'w')
+        if i==22:
+            no_relation+=1
+        pre.append(dic[str(i)])
+        #f.write(dic[str(i)] + '\n')
+    #f.close()
+    #f = open('gold.csv', 'w')
+    gold = []
     for i in gold_label:
         for j in i:
-            f.write(dic[str(j)] + '\n')
-    f.close()
-    return start()
+            gold.append(dic[str(j)])
+    #        f.write(dic[str(j)] + '\n')
+    #f.close()
+    print(no_relation)
+    return start(gold, pre)
 
 def run_epoch(session, model, data, label, length, test=False):
     if test == True:
-        batch_size = 1
+        batch_size = 160
     else:
         batch_size = FLAGS.batch_size
     epoch_size = (len(data) // batch_size)
     statef = session.run(model._initial_state_f)
-    stateb = session.run(model._initial_state_b)
+    #stateb = session.run(model._initial_state_b)
 
     data = data[:len(data)-len(data)%batch_size]
     total = len(data)
@@ -143,21 +158,34 @@ def run_epoch(session, model, data, label, length, test=False):
 
         final_length=numpy.array(length)
         final_length=numpy.split(final_length, epoch_size,0)
-
-
+    weight = []
+    for i in range(42):
+        if i==22:
+            weight.append(0.05)
+        else:
+            weight.append(1.0)    
+    weight = [weight]
     for ii in range(epoch_size):
-        
-
+        #print(adata[ii][0])
+        #print(alabel[ii][0])
+        #print(final_length[ii])
+        #break
+        #print(ii)
         feed_dict = {}
         feed_dict[model.x] = adata[ii]
         feed_dict[model.y] = alabel[ii]
+        feed_dict[model.weight] = weight
+        #print(final_length[ii])
+        #print(adata[ii])
         feed_dict[model.length] = final_length[ii]
         if test == False:
             #fetches = [model.loss, model.pre_label]
-            fetches = [model.loss, model.pre_label, model._train_op]
-            loss, pre_label, _ =session.run(fetches, feed_dict) 
+            fetches = [model.loss, model.pre_label, model.pre_dis, model._train_op]
+            loss, pre_label, pre_dis,_ =session.run(fetches, feed_dict) 
             #loss, pre_label = session.run(fetches, feed_dict)
+            #print(pre_dis[0][22])
             total_loss += loss
+            #print(pre_label)
             pre.extend(pre_label)
             #total_correct += sta(pre_label, alabel[ii])
         else:
@@ -178,21 +206,21 @@ def run_epoch(session, model, data, label, length, test=False):
 if __name__=='__main__':
   
     #preprocess.build_vocab()
-    #preprocess.convert_to_id()
+    #preproce:q`ss.convert_to_id()
     #preprocess.prepare_word_vec()
-    tf.app.flags.DEFINE_float("init_scale", 0.05, "initialize range")
+    tf.app.flags.DEFINE_float("init_scale", 0.001, "initialize range")
     tf.app.flags.DEFINE_string("sent_pkl_file", "sen_pkl_file.csv", "sentence file")
     tf.app.flags.DEFINE_string("word_vec_pkl_file", "word_vector.csv", "word embedding file")
     tf.app.flags.DEFINE_float("lr", 1.0, "learning rate")
     tf.app.flags.DEFINE_float("lr_decay", 0.9, "lr decay")
     tf.app.flags.DEFINE_float("keep_prob", 0.5, "keep probability")
-    tf.app.flags.DEFINE_integer("batch_size", 50, "batch_size")
-    tf.app.flags.DEFINE_integer("max_max_epoch", 30, "iteration")
-    tf.app.flags.DEFINE_integer("max_epoch", 20, "iteration")
-    tf.app.flags.DEFINE_integer("hidden_size", 50, "hidden size")
-    tf.app.flags.DEFINE_float("max_grad_norm", 5.0, "max grad")
+    tf.app.flags.DEFINE_integer("batch_size", 150, "batch_size")
+    tf.app.flags.DEFINE_integer("max_max_epoch", 90, "iteration")
+    tf.app.flags.DEFINE_integer("max_epoch", 70, "iteration")
+    tf.app.flags.DEFINE_integer("hidden_size", 200, "hidden size")
+    tf.app.flags.DEFINE_float("max_grad_norm", 2.0, "max grad")
     tf.app.flags.DEFINE_boolean("max_pooling", True, "max pooling or mean pooling")
-    tf.app.flags.DEFINE_integer("mslen", 96, "uniform sentence length")
+    tf.app.flags.DEFINE_integer("mslen", 95, "uniform sentence length")
 
     FLAGS = tf.app.flags.FLAGS
 
@@ -203,13 +231,13 @@ if __name__=='__main__':
     train_data_1, train_label_1, train_len_1, valid_data_1, valid_label_1, valid_len_1, test_data, test_label, test_len = sentences
     for cross_label in range(1, 2):
         with tf.Graph().as_default(), tf.Session(config=_config) as session:
-            initializer = tf.random_uniform_initializer(-FLAGS.init_scale, FLAGS.init_scale)
+            #initializer = tf.random_uniform_initializer(-FLAGS.init_scale, FLAGS.init_scale)
             #saver_path = saver.save(session, "/home/leijh/model1/extract.ckpt")
-            with tf.variable_scope("model", reuse=None, initializer=initializer):
+            with tf.variable_scope("model", reuse=None):
                 m = PTBModel(is_training=True, use_dropout=True, max_pooling = FLAGS.max_pooling, batch_size = FLAGS.batch_size)   
-            with tf.variable_scope("model", reuse=True, initializer=initializer):
-                mvalid = PTBModel(is_training=False, use_dropout=False, max_pooling = FLAGS.max_pooling, batch_size = 1)
-            with tf.variable_scope("model", reuse=True, initializer=initializer):
+            with tf.variable_scope("model", reuse=True):
+                mvalid = PTBModel(is_training=False, use_dropout=False, max_pooling = FLAGS.max_pooling, batch_size = 160)
+            with tf.variable_scope("model", reuse=True):
                 mtest = PTBModel(is_training=False, use_dropout=False, max_pooling = FLAGS.max_pooling, batch_size = 1)
         #saver=tf.train.Saver()
         #ckpt = tf.train.get_checkpoint_state("/home/leijh/model1/exp66")        
@@ -256,7 +284,7 @@ if __name__=='__main__':
                 print("train-%d:"%(cross_label))
                 train_per = run_epoch(session, m, train_data, train_label, train_len)
     
-                print("valid-%d:"%(cross_label))
+               #print("valid-%d:"%(cross_label))
                 valid_per = run_epoch(session, mvalid, valid_data, valid_label, valid_len, test=True)
             #print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
             
