@@ -48,18 +48,21 @@ class PTBModel(object):
 
             w = tf.get_variable('w', [2 * FLAGS.hidden_size, 42], tf.float32)
             b = tf.get_variable('b', [1, 42], tf.float32)
-            tmatrix = tf.tanh(tf.matmul(final_states, w) + b)
-                
+            tmatrix = tf.matmul(final_states, w) + b
+            self.tmatrix = tf.matmul(final_states, w) + b
             one_hots = tf.one_hot(self.y, 42)
             weights = tf.reduce_sum(self.weight * one_hots, axis=1)
             
             pre_dis = tf.nn.softmax(tmatrix)
             self.pre_dis = pre_dis
+            self.get_confidence = tf.reduce_max(pre_dis,1)
+
+            self.pre_dis = pre_dis
             self.pre_label = tf.argmax(pre_dis, -1)
             #y_mask = tf.one_hot(self.y, 53)
                 
-            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=pre_dis, labels=self.y)
-            loss = loss * weights
+            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=tmatrix, labels=self.y)
+            #loss = loss * weights
             self.loss = tf.reduce_sum(loss) / batch_size
 
 
@@ -117,7 +120,29 @@ def sta(pre_label,gold_label):
     print(no_relation)
     return start(gold, pre)
 
-def run_epoch(session, model, data, label, length, test=False):
+def strategy(confidence, gold, pre, epoch, t_gold):
+    t = (1.0 - max(0, epoch - FLAGS.startepoch)/100.0) ** FLAGS.lam
+    correct_change = 0 
+    noisy_but_wrong_change = 0
+    nonoisy_but_wrong_change = 0
+    for i in range(len(confidence)):
+        if confidence[i] > t:
+            if t_gold[i] != gold[i] :
+                if pre[i] == t_gold[i]:
+                    correct_change +=1
+                else:
+                    noisy_but_wrong_change +=1
+            else:
+                if pre[i] == t_gold[i]:
+                    continue
+                else:
+                    nonoisy_but_wrong_change+=1
+            gold[i] = pre[i]
+    return correct_change, noisy_but_wrong_change, nonoisy_but_wrong_change, gold
+           
+            
+
+def run_epoch(session, model, data, label, length, max_epoch, test=False):
     if test == True:
         batch_size = 160
     else:
@@ -130,6 +155,14 @@ def run_epoch(session, model, data, label, length, test=False):
     total = len(data)
     label = label[:len(label)-len(label)%batch_size]
     length = length[:len(length)-len(length)%batch_size]
+    weight = [0 for i in range(42)]
+    #for lab in label:
+    #    weight[int(lab)]+=1
+    #for i in range(len(weight)):
+    #    weight[i] = 1/float(weight[i]) * 1500
+    #weight = [weight]
+    #print(weight)
+    #return
     total_loss = 0.0
     total_correct = 0
     pre = []
@@ -161,10 +194,13 @@ def run_epoch(session, model, data, label, length, test=False):
     weight = []
     for i in range(42):
         if i==22:
-            weight.append(0.05)
+            weight.append(1.0)
         else:
             weight.append(1.0)    
     weight = [weight]
+    correct_changes = 0
+    noisy_but_wrong_changes = 0
+    nonoisy_but_wrong_changes = 0
     for ii in range(epoch_size):
         #print(adata[ii][0])
         #print(alabel[ii][0])
@@ -180,15 +216,25 @@ def run_epoch(session, model, data, label, length, test=False):
         feed_dict[model.length] = final_length[ii]
         if test == False:
             #fetches = [model.loss, model.pre_label]
-            fetches = [model.loss, model.pre_label, model.pre_dis, model._train_op]
-            loss, pre_label, pre_dis,_ =session.run(fetches, feed_dict) 
-            #loss, pre_label = session.run(fetches, feed_dict)
-            #print(pre_dis[0][22])
+            #fetches = [model.get_confidence, model.pre_label]
+            #confidence, pre_label =session.run(fetches, feed_dict) 
+            #correct_change, noisy_but_wrong_change, nonoisy_but_wrong_change, new_y = strategy(confidence, alabel[ii], max_epoch, pre_label)
+            #feed_dict[model.y] = new_y
+            #correct_changes += correct_change
+            #noisy_but_wrong_changes += noisy_but_wrong_change 
+            #nonoisy_but_wrong_changes += nonoisy_but_wrong_change
+
+            fetches = [model.loss, model.pre_label, model._train_op]
+            loss, pre_label, _ = session.run(fetches, feed_dict)
+            #for pre_i in range(len(pre_dis)):
+            #    print(pre_dis[pre_i][:])
+            #    print(pre_dis[pre_i][22])
             total_loss += loss
             #print(pre_label)
             pre.extend(pre_label)
             #total_correct += sta(pre_label, alabel[ii])
         else:
+            feed_dict[model.y] = alabel[ii]
             fetches = [model.loss, model.pre_label]
             loss, pre_label =session.run(fetches, feed_dict) 
             total_loss += loss
@@ -200,6 +246,7 @@ def run_epoch(session, model, data, label, length, test=False):
     loss = total_loss / float(epoch_size)
     print("P: %.3f R: %.3f F1: %.3f"%(p, r, f1))
     print("loss:%.7f "%(loss))
+    #print("correct_change: %d noisy_but_wrong_change: %d nonoisy_but_wrong_change: %d"%(correct_changes, noisy_but_wrong_changes, nonoisy_but_wrong_changes))
     return f1
 
 
@@ -208,22 +255,23 @@ if __name__=='__main__':
     #preprocess.build_vocab()
     #preproce:q`ss.convert_to_id()
     #preprocess.prepare_word_vec()
-    tf.app.flags.DEFINE_float("init_scale", 0.001, "initialize range")
+    tf.app.flags.DEFINE_float("init_scale", 0.01, "initialize range")
     tf.app.flags.DEFINE_string("sent_pkl_file", "sen_pkl_file.csv", "sentence file")
     tf.app.flags.DEFINE_string("word_vec_pkl_file", "word_vector.csv", "word embedding file")
-    tf.app.flags.DEFINE_float("lr", 1.0, "learning rate")
+    tf.app.flags.DEFINE_float("lr", 0.1, "learning rate")
     tf.app.flags.DEFINE_float("lr_decay", 0.9, "lr decay")
     tf.app.flags.DEFINE_float("keep_prob", 0.5, "keep probability")
-    tf.app.flags.DEFINE_integer("batch_size", 150, "batch_size")
-    tf.app.flags.DEFINE_integer("max_max_epoch", 90, "iteration")
-    tf.app.flags.DEFINE_integer("max_epoch", 70, "iteration")
+    tf.app.flags.DEFINE_integer("batch_size", 128, "batch_size")
+    tf.app.flags.DEFINE_integer("max_max_epoch", 50, "iteration")
+    tf.app.flags.DEFINE_integer("max_epoch", 10, "iteration")
     tf.app.flags.DEFINE_integer("hidden_size", 200, "hidden size")
-    tf.app.flags.DEFINE_float("max_grad_norm", 2.0, "max grad")
+    tf.app.flags.DEFINE_float("max_grad_norm", 5.0, "max grad")
     tf.app.flags.DEFINE_boolean("max_pooling", True, "max pooling or mean pooling")
     tf.app.flags.DEFINE_integer("mslen", 95, "uniform sentence length")
-
+    tf.app.flags.DEFINE_float("lam", 0.5, "lambda")
+    tf.app.flags.DEFINE_float("startepoch", 10, "when to change label")
     FLAGS = tf.app.flags.FLAGS
-
+    print(FLAGS.__flags)
     sentences = pickle.load(open(FLAGS.sent_pkl_file))
     #print(sentences[0])
     _config = tf.ConfigProto()
@@ -231,16 +279,19 @@ if __name__=='__main__':
     train_data_1, train_label_1, train_len_1, valid_data_1, valid_label_1, valid_len_1, test_data, test_label, test_len = sentences
     for cross_label in range(1, 2):
         with tf.Graph().as_default(), tf.Session(config=_config) as session:
-            #initializer = tf.random_uniform_initializer(-FLAGS.init_scale, FLAGS.init_scale)
+            initializer = tf.random_uniform_initializer(-FLAGS.init_scale, FLAGS.init_scale)
             #saver_path = saver.save(session, "/home/leijh/model1/extract.ckpt")
+            #with tf.variable_scope("model", reuse=None, initializer=initializer):
             with tf.variable_scope("model", reuse=None):
                 m = PTBModel(is_training=True, use_dropout=True, max_pooling = FLAGS.max_pooling, batch_size = FLAGS.batch_size)   
+            #with tf.variable_scope("model", reuse=True, initializer=initializer):
             with tf.variable_scope("model", reuse=True):
                 mvalid = PTBModel(is_training=False, use_dropout=False, max_pooling = FLAGS.max_pooling, batch_size = 160)
+            #with tf.variable_scope("model", reuse=True, initializer=initializer):
             with tf.variable_scope("model", reuse=True):
                 mtest = PTBModel(is_training=False, use_dropout=False, max_pooling = FLAGS.max_pooling, batch_size = 1)
-        #saver=tf.train.Saver()
-        #ckpt = tf.train.get_checkpoint_state("/home/leijh/model1/exp66")        
+            saver=tf.train.Saver(max_to_keep=None)
+        #ckpwith tf.variable_scope("model", reuse=None, initializer=initializer)t = tf.train.get_checkpoint_state("/home/leijh/model1/exp66")        
         #saver.restore(session,ckpt.model_checkpoint_path)
     #summary_writer = tf.train.SummaryWriter('/home/leijinhao/model1',session.graph)
             tf.initialize_all_variables().run()
@@ -269,26 +320,35 @@ if __name__=='__main__':
                 valid_label = valid_label_3
             maxvalid = -1.0
             #print(len(train_data))
-            for i in range(FLAGS.max_max_epoch):   #
-                if i>=20:
-                    if valid_per<=maxvalid:
-                        lr_decay = FLAGS.lr_decay ** max(i - FLAGS.max_epoch, 0.0) 
-                        m.assign_lr(session, FLAGS.lr * FLAGS.lr_decay)
-                else:
-                    m.assign_lr(session, FLAGS.lr)      
+            m.assign_lr(session, FLAGS.lr)
+            for i in range(FLAGS.max_max_epoch):
+             
+                
+                  
             #  llr_decay = 0.5^(i-max_epoch)
                 #lr_decay = config.lr_decay ** max(i - config.max_epoch, 0.0)
                 #m.assign_lr(session, config.learning_rate * lr_decay) # learning rate
                 #m.assign_lr(session, FLAGS.lr)
                 print("Epoch: %d Learning rate: %.5f" % (i + 1, session.run(m.lr)))
                 print("train-%d:"%(cross_label))
-                train_per = run_epoch(session, m, train_data, train_label, train_len)
+                train_per = run_epoch(session, m, train_data, train_label, train_len, i)
     
                #print("valid-%d:"%(cross_label))
-                valid_per = run_epoch(session, mvalid, valid_data, valid_label, valid_len, test=True)
-            #print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
-            
                 
+                #saver_path = saver.save(session, "/scr/leijh/ds_model/save/epoch%d"%(i))
+                valid_per = run_epoch(session, mvalid, valid_data, valid_label, valid_len, i, test=True)
+            #print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+                saver_path = saver.save(session, "/scr/leijh/ds_model/save3/epoch%d_%.3f"%(i, valid_per)) 
+                if i>=FLAGS.max_epoch:
+                    if valid_per<=maxvalid:
+                        lr_decay = FLAGS.lr_decay ** max(i - FLAGS.max_epoch, 0.0)
+                        m.assign_lr(session, FLAGS.lr * lr_decay)
+                else:
+                    m.assign_lr(session, FLAGS.lr)
+                if valid_per > maxvalid:
+                    maxvalid = valid_per
+                    #if valid_per > maxvalid: 
                 #    maxvalid = valid_per
                 #    print("test:")
                 #    test_result = run_epoch(session, mtest, test_data, test_lable_s, test_lable_e, test_len, test_g, test = True)
+            print(maxvalid)
