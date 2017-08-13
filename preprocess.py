@@ -54,7 +54,7 @@ def relation_2id(args):
         for n, line in enumerate(f):
             s = line.split()
             #print(s[0])
-            relation_map[s[0]] = s[1].strip()
+            relation_map[s[0]] = int(s[1].strip())
     return relation_map
 
 #@util.file_checker(config.lm_sent_pkl_file)
@@ -65,22 +65,47 @@ def convert_to_id(args, relation_map):
         sents = []
         labels=[]
         lengths=[]
-        with open(data_file) as lm_sent_txt_file:
-            for n, line in enumerate(lm_sent_txt_file):
-                if n % 10000 ==0:
-                    print ('read_%s_data%d'%(type, n))
-                ids = [word_to_id.get(w, unk_id) for w in line.strip().split()]
-                ids.extend([unk_id] * (args.max_len - len(ids)))
-                sents.append(ids)
-                length = len(ids)
-                lengths.append(length)
+        no_rel = []
         with open(gold_file) as gold_file:
             for n, line in enumerate(gold_file):
                 if n % 10000 ==0:
                     print ('read_%s_gold%d'%(type, n))
                 label = relation_map[line.strip()]
                 labels.append(label)
-        return sents, labels, lengths
+        if type == 'train':
+            population = range(len(labels))
+            #relation_pop = range(42)
+            chosen = random.sample(population, int(len(labels) * args.noisy_per))
+            noisy_labels = labels[:]
+            for i in chosen:
+                relation_pop = range(42)
+                relation_pop.remove(int(labels[i]))
+                noisy_labels[i] = str(random.sample(relation_pop, 1)[0])
+            print('test noisy')
+        else:
+            noisy_labels = labels[:]
+        def test():
+            n = 0
+            print(labels[:10])
+            print(noisy_labels[:10])
+            for i in range(len(labels)):
+                if labels[i] != noisy_labels[i]:
+                    n+=1
+                #print(n)
+                #print(float(n/len(labels)))
+        test()
+        
+        with open(data_file) as lm_sent_txt_file:
+            for n, line in enumerate(lm_sent_txt_file):
+                if n % 10000 ==0:
+                    print ('read_%s_data%d'%(type, n))
+                ids = [word_to_id.get(w, unk_id) for w in line.strip().split()]
+                length = len(ids)
+                ids.extend([unk_id] * (args.max_len - len(ids)))
+                sents.append(ids)
+                #length = len(ids)
+                lengths.append(length)
+        return sents, labels, lengths, noisy_labels
      
     
     '''sids = list(range(len(sents)))
@@ -112,16 +137,15 @@ def convert_to_id(args, relation_map):
     valid_len_3=[lengths[si] for si in sids[three:2 * three]]'''
 
 
-    train_data, train_label, train_len = convert('train', args.train_data_file, args.train_gold)
-    valid_data, valid_label, valid_len = convert('dev', args.dev_data_file, args.dev_gold)
-    test_data, test_label, test_len = convert('test', args.test_data_file, args.test_gold)
+    train_data, train_label, train_len, train_noisy_labels = convert('train', args.train_data_file, args.train_gold)
+    valid_data, valid_label, valid_len, valid_noisy_labels = convert('dev', args.dev_data_file, args.dev_gold)
+    test_data, test_label, test_len, test_noisy_labels = convert('test', args.test_data_file, args.test_gold)
 
-    print(len(train_data), len(train_label), len(train_len))
+    print(len(train_data), len(train_label), len(train_len), len(train_noisy_labels))
     #for i in range(3):
     #    print(test[i],testlen[i],testgold[i],testcategory[i],testgold[i])
     with open(args.lm_sent_pkl_file, 'wb') as lm_sent_pkl_file:
-        pickle.dump((train_data, train_label, train_len, valid_data, 
-            valid_label, valid_len, test_data, test_label, test_len), lm_sent_pkl_file, pickle.HIGHEST_PROTOCOL)
+        pickle.dump((train_data, train_label, train_len, train_noisy_labels, valid_data, valid_label, valid_len, valid_noisy_labels, test_data, test_label, test_len, test_noisy_labels), lm_sent_pkl_file, pickle.HIGHEST_PROTOCOL)
 
 #@util.file_checker(config.word_vec_pkl_file)
 def prepare_word_vec(args):
@@ -143,7 +167,7 @@ def prepare_word_vec(args):
 def main():
   #  prepare_sentence()
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--word_size', dest='word_vec_size', default=50)
+    parser.add_argument('--word_size', dest='word_vec_size', default=200)
     parser.add_argument('--test_file', dest='test_data_file', default='test_data.csv')
     parser.add_argument('--train_file', dest='train_data_file', default='train_data.csv')
     parser.add_argument('--dev_file', dest='dev_data_file', default='dev_data.csv')
@@ -151,12 +175,13 @@ def main():
     parser.add_argument('--train_gold', dest='train_gold', default='train.gold')
     parser.add_argument('--dev_gold', dest='dev_gold', default='dev.gold')
     parser.add_argument('--word_vec_out_file', dest='word_vec_pkl_file', default='word_vector.csv')
-    parser.add_argument('--word_vec_txt', dest='word_vec_txt_file', default='/scr/leijh/data/glove.6B.50d.txt')
+    parser.add_argument('--word_vec_txt', dest='word_vec_txt_file', default='/scr/leijh/data/glove.6B.200d.txt')
     parser.add_argument('--relation_to_id_file', dest='relation2id_file', default="re_map.csv")
     parser.add_argument('--vocab_file', dest='vocab_file', default='vocabulary.csv')
     parser.add_argument('--all_file', dest='dataset_file', default='all.csv')
     parser.add_argument('--sen_pkl_file', dest='lm_sent_pkl_file', default='sen_pkl_file.csv')
-    parser.add_argument('--max_len', dest='max_len', default=96)
+    parser.add_argument('--max_len', dest='max_len', default=95)
+    parser.add_argument('--ranodm_noise', dest='noisy_per', default=0.2)
     args = parser.parse_args()
     #relation_map = {}
     relation_map = relation_2id(args)

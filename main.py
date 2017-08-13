@@ -3,7 +3,7 @@ import tensorflow as tf
 import pickle
 import time
 import random
-import preprocess
+#import preprocess
 import util
 import os
 from score import start
@@ -56,8 +56,8 @@ class PTBModel(object):
             pre_dis = tf.nn.softmax(tmatrix)
             self.pre_dis = pre_dis
             self.get_confidence = tf.reduce_max(pre_dis,1)
-
-            self.pre_dis = pre_dis
+            #self.get_conf = self.get_confidence
+            #self.pre_dis = pre_dis
             self.pre_label = tf.argmax(pre_dis, -1)
             #y_mask = tf.one_hot(self.y, 53)
                 
@@ -76,7 +76,7 @@ class PTBModel(object):
             tvars = tf.trainable_variables()
     
             grads, _ = tf.clip_by_global_norm(tf.gradients(self.loss, tvars), FLAGS.max_grad_norm)
-    
+            print(tf.gradients(self.loss, tvars))
             optimizer = tf.train.AdagradOptimizer(self._lr)
         
             self._train_op = optimizer.apply_gradients(zip(grads, tvars))
@@ -165,13 +165,14 @@ def run_epoch(session, model, data, label, length, max_epoch, test=False):
     #return
     total_loss = 0.0
     total_correct = 0
+    confidence = 0.0
     pre = []
     sids = list(range(len(data)))
     if test == False:
         random.shuffle(sids)
-        adata=data
-        alabel=label
-        lengths=length
+        adata=data[:]
+        alabel=label[:]
+        lengths=length[:]
         for index in range(len(sids)):
             adata[index]=data[sids[index]]
             alabel[index]=label[sids[index]]
@@ -224,11 +225,14 @@ def run_epoch(session, model, data, label, length, max_epoch, test=False):
             #noisy_but_wrong_changes += noisy_but_wrong_change 
             #nonoisy_but_wrong_changes += nonoisy_but_wrong_change
 
-            fetches = [model.loss, model.pre_label, model._train_op]
-            loss, pre_label, _ = session.run(fetches, feed_dict)
+            fetches = [model.loss, model.pre_label, model._train_op, model.get_confidence]
+            loss, pre_label, _ , conf= session.run(fetches, feed_dict)
+            #print(conf)
             #for pre_i in range(len(pre_dis)):
             #    print(pre_dis[pre_i][:])
             #    print(pre_dis[pre_i][22])
+            for i in conf:
+                confidence+=i
             total_loss += loss
             #print(pre_label)
             pre.extend(pre_label)
@@ -246,6 +250,8 @@ def run_epoch(session, model, data, label, length, max_epoch, test=False):
     loss = total_loss / float(epoch_size)
     print("P: %.3f R: %.3f F1: %.3f"%(p, r, f1))
     print("loss:%.7f "%(loss))
+    if test ==False:
+        print("average confidence %.3f / %d %.5f"%(confidence, len(data), confidence/float(len(data))))
     #print("correct_change: %d noisy_but_wrong_change: %d nonoisy_but_wrong_change: %d"%(correct_changes, noisy_but_wrong_changes, nonoisy_but_wrong_changes))
     return f1
 
@@ -258,11 +264,11 @@ if __name__=='__main__':
     tf.app.flags.DEFINE_float("init_scale", 0.01, "initialize range")
     tf.app.flags.DEFINE_string("sent_pkl_file", "sen_pkl_file.csv", "sentence file")
     tf.app.flags.DEFINE_string("word_vec_pkl_file", "word_vector.csv", "word embedding file")
-    tf.app.flags.DEFINE_float("lr", 0.1, "learning rate")
+    tf.app.flags.DEFINE_float("lr", 0.5, "learning rate")
     tf.app.flags.DEFINE_float("lr_decay", 0.9, "lr decay")
     tf.app.flags.DEFINE_float("keep_prob", 0.5, "keep probability")
     tf.app.flags.DEFINE_integer("batch_size", 128, "batch_size")
-    tf.app.flags.DEFINE_integer("max_max_epoch", 50, "iteration")
+    tf.app.flags.DEFINE_integer("max_max_epoch", 60, "iteration")
     tf.app.flags.DEFINE_integer("max_epoch", 10, "iteration")
     tf.app.flags.DEFINE_integer("hidden_size", 200, "hidden size")
     tf.app.flags.DEFINE_float("max_grad_norm", 5.0, "max grad")
@@ -295,8 +301,9 @@ if __name__=='__main__':
         #saver.restore(session,ckpt.model_checkpoint_path)
     #summary_writer = tf.train.SummaryWriter('/home/leijinhao/model1',session.graph)
             tf.initialize_all_variables().run()
-        #ckpt = tf.train.get_checkpoint_state("/home/leijh/model1/e")        
-        #saver.restore(session,ckpt.model_checkpoint_path)
+            #ckpt = tf.train.get_checkpoint_state("/scr/leijh/ds_model/thebest")        
+            #saver.restore(session,ckpt.model_checkpoint_path)
+            #saver.restore(session, '/scr/leijh/ds_model/thebest/epoch20_0.603')
             if cross_label == 1:
                 train_data = train_data_1
                 valid_data = valid_data_1
@@ -338,11 +345,11 @@ if __name__=='__main__':
                 #saver_path = saver.save(session, "/scr/leijh/ds_model/save/epoch%d"%(i))
                 valid_per = run_epoch(session, mvalid, valid_data, valid_label, valid_len, i, test=True)
             #print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
-                saver_path = saver.save(session, "/scr/leijh/ds_model/save3/epoch%d_%.3f"%(i, valid_per)) 
+                saver_path = saver.save(session, "/scr/leijh/ds_model/clean3/epoch%d_%.3f"%(i, valid_per)) 
                 if i>=FLAGS.max_epoch:
                     if valid_per<=maxvalid:
                         lr_decay = FLAGS.lr_decay ** max(i - FLAGS.max_epoch, 0.0)
-                        m.assign_lr(session, FLAGS.lr * lr_decay)
+                        m.assign_lr(session, session.run(m.lr) * FLAGS.lr_decay)
                 else:
                     m.assign_lr(session, FLAGS.lr)
                 if valid_per > maxvalid:
